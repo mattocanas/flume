@@ -1,0 +1,36 @@
+{
+  "name": "flume",
+  "version": "0.1.0",
+  "description": "Flume — a fast, private, browser-based flow cytometry viewer. Histograms, ridge plots, quadrant/density dot plots, interactive gating, and gMFI / log2 fold-change statistics. 100% client-side: your data never leaves your machine.",
+  "license": "BSD-3-Clause",
+  "author": "Matthew Ocanas",
+  "homepage": "https://mattocanas.github.io/flume/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mattocanas/flume.git"
+  },
+  "keywords": [
+    "flow-cytometry",
+    "facs",
+    "fcs",
+    "histogram",
+    "ridge-plot",
+    "visualization",
+    "immunology"
+  ],
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}
