@@ -211,8 +211,10 @@ function biexpRange(sorted){
   const n=sorted.length;
   const p005=sorted[Math.floor(n*0.005)];
   const p995=sorted[Math.min(n-1,Math.ceil(n*0.995)-1)];
-  const lo0=Math.max(0,p005);const tLo=T(lo0),tHi=T(p995);const pad=(tHi-tLo)*0.06||0.2;
-  return{lo:tLo-pad,hi:tHi+pad,dMin:lo0,dMax:p995};
+  // Biexp exists to SHOW the near-zero / negative population, so the lower bound follows the data
+  // (p005, which may be negative) rather than being floored at 0. asinh compresses it near the axis.
+  const tLo=T(p005),tHi=T(p995);const pad=(tHi-tLo)*0.06||0.2;
+  return{lo:tLo-pad,hi:tHi+pad,dMin:p005,dMax:p995};
 }
 function analyzeValues(values,log=true){
   if(log)return logRange(values);
@@ -1172,7 +1174,7 @@ function HistogramMode({samples,allHeaders,colors,updateSampleName,updateColor,r
     if(appliedXMin.trim()===""||appliedXMax.trim()==="")return null;
     if(!Number.isFinite(min)||!Number.isFinite(max)||max<=min)return null;
     if(xIsLog){if(min<=0)return null;return{lo:Math.log10(min),hi:Math.log10(max),dMin:min,dMax:max};}
-    return{lo:T(Math.max(0,min)),hi:T(max),dMin:Math.max(0,min),dMax:max};
+    return{lo:T(min),hi:T(max),dMin:min,dMax:max}; // biexp: negative min is allowed
   },[appliedXMin,appliedXMax,xIsLog]);
   const axisModeLabel=xDomain?"Manual":"Auto";
   const hasPendingXAxis=xMinInput!==appliedXMin||xMaxInput!==appliedXMax;
