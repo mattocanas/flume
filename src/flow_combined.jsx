@@ -2320,6 +2320,16 @@ export default function FlowCytometryApp(){
       </div>}
 
       {mergeOpen&&<MergeChannelsModal headers={allHeaders} onMerge={mergeChannels} onClose={()=>setMergeOpen(false)}/>}
+
+      <footer style={{maxWidth:1200,margin:"40px auto 8px",paddingTop:16,borderTop:"1px solid #E5E7EB",display:"flex",flexWrap:"wrap",justifyContent:"center",gap:"4px 10px",fontSize:11.5,color:"#9CA3AF",fontFamily:"var(--ff)",textAlign:"center"}}>
+        <span>Flume — created by Matthew Ocanas</span>
+        <span aria-hidden="true">·</span>
+        <a href="https://github.com/mattocanas/flume" target="_blank" rel="noopener noreferrer" style={{color:"#6B7280",textDecoration:"none"}}>Source on GitHub</a>
+        <span aria-hidden="true">·</span>
+        <a href="https://github.com/mattocanas/flume/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" style={{color:"#6B7280",textDecoration:"none"}}>BSD-3-Clause License</a>
+        <span aria-hidden="true">·</span>
+        <span>© 2026 Board of Regents, The University of Texas System</span>
+      </footer>
     </div>
   );
 }
