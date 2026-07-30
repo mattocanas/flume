@@ -52,9 +52,12 @@ function computeHist(values,nBins,lo,hi){
   const centers=Array.from({length:nBins},(_,i)=>lo+(i+0.5)*w);
   for(let k=0;k<values.length;k++){
     const v=values[k];
-    // Fluorescence can't be negative: pile ≤0 events into the leftmost bin (like a log axis
-    // clamping to its floor) rather than spreading them left. Positive events bin normally.
-    const idx=v<=0?0:Math.floor((T(v)-lo)/w);
+    // Fluorescence can't be meaningfully negative: ≤0 events (compensation artifacts) are not
+    // plotted, just as a log axis can't show them. This keeps the axis floored at 0 without a
+    // giant edge spike that would flatten the real population. Stats (% positive, gMFI) use the
+    // full raw data separately, so they're unaffected.
+    if(v<=0)continue;
+    const idx=Math.floor((T(v)-lo)/w);
     if(idx>=0&&idx<nBins)counts[idx]++;
   }
   return{counts,centers};
