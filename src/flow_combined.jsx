@@ -50,17 +50,17 @@ function detectChannels(headers){
   const fluoro=headers.filter(h=>!/FSC|SSC|Time/i.test(h));
   return fluoro.length>=2?[fluoro[0],fluoro[1]]:[headers[0],headers[1]||headers[0]];
 }
-function computeHist(values,nBins,lo,hi){
+function computeHist(values,nBins,lo,hi,log=true){
   const w=(hi-lo)/nBins;const counts=new Array(nBins).fill(0);
   const centers=Array.from({length:nBins},(_,i)=>lo+(i+0.5)*w);
   for(let k=0;k<values.length;k++){
     const v=values[k];
-    // Fluorescence can't be meaningfully negative: ≤0 events (compensation artifacts) are not
-    // plotted, just as a log axis can't show them. This keeps the axis floored at 0 without a
-    // giant edge spike that would flatten the real population. Stats (% positive, gMFI) use the
-    // full raw data separately, so they're unaffected.
-    if(v<=0)continue;
-    const idx=Math.floor((Math.log10(v)-lo)/w);
+    // On a log axis ≤0 events are off-scale and not plotted (fluorescence has no meaningful
+    // negatives). Biexponential (asinh) can place them near the origin. Stats use the raw data
+    // separately, so the analysis is unaffected either way.
+    let idx;
+    if(log){ if(v<=0)continue; idx=Math.floor((Math.log10(v)-lo)/w); }
+    else idx=Math.floor((T(v)-lo)/w);
     if(idx>=0&&idx<nBins)counts[idx]++;
   }
   return{counts,centers};
@@ -205,13 +205,25 @@ function getTicks(dMin,dMax){
   return thinned;
 }
 
-// Histogram domains are log10, snapped to decade bounds (see logRange) so the axis reads like a
-// FlowJo log plot (10⁰, 10¹, …). Only positive events define the range; ≤0 are off-scale.
-function analyzeValues(values){return logRange(values);}
-function analyzePooledValues(samples,channel){
+// Histogram domains. log=true → log10 decade bounds (FlowJo log look, ≤0 off-scale).
+// log=false → biexponential (asinh) percentile range, floored at 0 so negatives don't drag it left.
+function biexpRange(sorted){
+  const n=sorted.length;
+  const p005=sorted[Math.floor(n*0.005)];
+  const p995=sorted[Math.min(n-1,Math.ceil(n*0.995)-1)];
+  const lo0=Math.max(0,p005);const tLo=T(lo0),tHi=T(p995);const pad=(tHi-tLo)*0.06||0.2;
+  return{lo:tLo-pad,hi:tHi+pad,dMin:lo0,dMax:p995};
+}
+function analyzeValues(values,log=true){
+  if(log)return logRange(values);
+  return biexpRange([...values].sort((a,b)=>a-b));
+}
+function analyzePooledValues(samples,channel,log=true){
   const pooled=[];
   for(const s of samples){const vals=s.columns[channel];if(vals)for(let i=0;i<vals.length;i++)pooled.push(vals[i]);}
-  return logRange(pooled);
+  if(log)return logRange(pooled);
+  if(!pooled.length)return{lo:0,hi:1,dMin:0,dMax:10000};
+  return biexpRange(pooled.sort((a,b)=>a-b));
 }
 function getRange(values){
   const sorted=[...values].sort((a,b)=>a-b);
@@ -367,20 +379,21 @@ function ColorPicker({color,onChange,options=COLOR_OPTIONS,align="left"}){
 }
 
 // ─── Single Histogram ────────────────────────────────
-function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNameChange,xDomain,svgRef:externalRef,gateLabel,gateColor,yMode="count",showGate=true,showPct=true}){
+function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNameChange,xDomain,svgRef:externalRef,gateLabel,gateColor,yMode="count",showGate=true,showPct=true,xScale="log"}){
   const internalRef=useRef(null);
   const svgRef=externalRef||internalRef;
   const dragRef=useRef(false);
+  const isLog=xScale!=="biexp",tf=isLog?HX:T,inv=isLog?HinvX:invT,tks=isLog?logTicks:axisTicks,fmt=isLog?fmtLogTick:fmtTick;
 
-  const{lo,hi,dMin,dMax}=useMemo(()=>xDomain||analyzeValues(values),[xDomain,values]);
-  const{counts,centers}=useMemo(()=>computeHist(values,N_BINS,lo,hi),[values,lo,hi]);
+  const{lo,hi,dMin,dMax}=useMemo(()=>xDomain||analyzeValues(values,isLog),[xDomain,values,isLog]);
+  const{counts,centers}=useMemo(()=>computeHist(values,N_BINS,lo,hi,isLog),[values,lo,hi,isLog]);
   const displayCounts=useMemo(()=>smoothCounts(counts),[counts]);
   const maxC=useMemo(()=>{let m=1;for(let i=0;i<displayCounts.length;i++)if(displayCounts[i]>m)m=displayCounts[i];return m;},[displayCounts]);
 
   const xS=useCallback(tv=>PL.ml+((tv-lo)/(hi-lo))*PW,[lo,hi]);
   const yS=useCallback(c=>PL.mt+PH-(c/maxC)*PH,[maxC]);
 
-  const tGate=HX(gateValue);
+  const tGate=tf(gateValue);
   const gateX=Math.max(PL.ml,Math.min(PL.ml+PW,xS(tGate)));
   const pePct=useMemo(()=>{let c=0;for(let i=0;i<values.length;i++)if(values[i]>=gateValue)c++;return((c/values.length)*100).toFixed(1);},[values,gateValue]);
   const gmfiAll=useMemo(()=>{let logSum=0,logN=0;for(let i=0;i<values.length;i++)if(values[i]>0){logSum+=Math.log(values[i]);logN++;}return logN>0?Math.round(Math.exp(logSum/logN)):0;},[values]);
@@ -389,7 +402,7 @@ function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNam
     const baseLine=PL.mt+PH;
     const points=centers.map((center,i)=>({x:xS(center),y:yS(displayCounts[i])}));
     const mp=smoothAreaPath(points,baseLine);
-    let pp="";const tg=HX(gateValue);const gi=centers.findIndex(c=>c>=tg);
+    let pp="";const tg=tf(gateValue);const gi=centers.findIndex(c=>c>=tg);
     if(gi>=0&&gi<centers.length){
       const gx=Math.max(PL.ml,Math.min(PL.ml+PW,xS(tg)));
       let sY=baseLine;
@@ -403,7 +416,7 @@ function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNam
     return{mainPath:mp,posPath:pp};
   },[centers,displayCounts,gateValue,xS,yS]);
 
-  const xticks=useMemo(()=>logTicks(dMin,dMax,PW),[dMin,dMax]);
+  const xticks=useMemo(()=>tks(dMin,dMax,PW),[dMin,dMax,tks]);
   const yTicks=useMemo(()=>{
     if(yMode==="pct")return[0,0.25,0.5,0.75,1].map(f=>({y:PL.mt+PH-f*PH,label:Math.round(f*100)}));
     const n=4;const s=Math.ceil(maxC/n);
@@ -411,7 +424,7 @@ function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNam
   },[maxC,yMode,yS]);
   const effYLabel=yMode==="pct"?"% of max":yLabel;
 
-  const toVal=useCallback(e=>{if(!svgRef.current)return gateValue;const r=svgRef.current.getBoundingClientRect();const sx=((e.clientX-r.left)/r.width)*PL.w;const tv=lo+((sx-PL.ml)/PW)*(hi-lo);return Math.round(HinvX(Math.max(lo,Math.min(hi,tv))));},[lo,hi,gateValue,svgRef]);
+  const toVal=useCallback(e=>{if(!svgRef.current)return gateValue;const r=svgRef.current.getBoundingClientRect();const sx=((e.clientX-r.left)/r.width)*PL.w;const tv=lo+((sx-PL.ml)/PW)*(hi-lo);return Math.round(inv(Math.max(lo,Math.min(hi,tv))));},[lo,hi,gateValue,svgRef]);
   const onDown=e=>{dragRef.current=true;e.preventDefault();};
   const onMove=useCallback(e=>{if(dragRef.current)onGateChange(toVal(e));},[toVal,onGateChange]);
   const onUp=()=>{dragRef.current=false;};
@@ -443,7 +456,7 @@ function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNam
           <text y={16} fontSize="13" fontWeight="800" fill={gateColor} style={{fontFamily:"var(--ff)"}}>{pePct}%</text>
         </g>}
         <line x1={PL.ml} x2={PL.ml+PW} y1={PL.mt+PH} y2={PL.mt+PH} stroke="#111111" strokeWidth={1.2}/>
-        {xticks.map(({v,label})=>{const x=xS(HX(v));return <g key={v}><line x1={x} x2={x} y1={PL.mt+PH} y2={PL.mt+PH+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={PL.mt+PH+17} textAnchor="middle" fontSize="9.5" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmtLogTick(v)}</text>}</g>;})}
+        {xticks.map(({v,label})=>{const x=xS(tf(v));return <g key={v}><line x1={x} x2={x} y1={PL.mt+PH} y2={PL.mt+PH+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={PL.mt+PH+17} textAnchor="middle" fontSize="9.5" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmt(v)}</text>}</g>;})}
         <text x={PL.ml+PW/2} y={PL.h-4} textAnchor="middle" fontSize="10" fill="#374151" fontWeight="500" style={{fontFamily:"var(--ff)"}}>{xLabel}</text>
         <line x1={PL.ml} x2={PL.ml} y1={PL.mt} y2={PL.mt+PH} stroke="#4B5563" strokeWidth={1}/>
         {yTicks.map((yt,i)=><g key={i}><line x1={PL.ml-4} x2={PL.ml} y1={yt.y} y2={yt.y} stroke="#4B5563"/><text x={PL.ml-7} y={yt.y+3} textAnchor="end" fontSize="8" fill="#6B7280" style={{fontFamily:"var(--ff)"}}>{yt.label}</text></g>)}
@@ -457,15 +470,16 @@ function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNam
 
 // ─── Overlay Histogram (NEW) ─────────────────────────
 // Superimposes several samples' density curves on one shared axis.
-function OverlayHistogram({samples,colors,channel,xLabel,yLabel,gateValue,onGateChange,xDomain,gateLabel,normalize,gateColor,showGate=true,showPct=true,onToggleGate,onTogglePct,pctPos="left",setPctPos}){
+function OverlayHistogram({samples,colors,channel,xLabel,yLabel,gateValue,onGateChange,xDomain,gateLabel,normalize,gateColor,showGate=true,showPct=true,onToggleGate,onTogglePct,pctPos="left",setPctPos,xScale="log"}){
   const svgRef=useRef(null);
   const dragRef=useRef(false);
+  const isLog=xScale!=="biexp",tf=isLog?HX:T,inv=isLog?HinvX:invT,tks=isLog?logTicks:axisTicks,fmt=isLog?fmtLogTick:fmtTick;
 
-  const{lo,hi,dMin,dMax}=useMemo(()=>xDomain||analyzePooledValues(samples,channel),[xDomain,samples,channel]);
+  const{lo,hi,dMin,dMax}=useMemo(()=>xDomain||analyzePooledValues(samples,channel,isLog),[xDomain,samples,channel,isLog]);
 
   const series=useMemo(()=>samples.map((s,i)=>{
     const vals=s.columns[channel]||[];
-    const{counts,centers}=computeHist(vals,N_BINS,lo,hi);
+    const{counts,centers}=computeHist(vals,N_BINS,lo,hi,isLog);
     const displayCounts=smoothCounts(counts);
     let mx=1;for(let k=0;k<displayCounts.length;k++)if(displayCounts[k]>mx)mx=displayCounts[k];
     let pos=0;for(let k=0;k<vals.length;k++)if(vals[k]>=gateValue)pos++;
@@ -499,7 +513,7 @@ function OverlayHistogram({samples,colors,channel,xLabel,yLabel,gateValue,onGate
     return{x,y,pct:s.pct,color:s.color};
   }),[series,normalize,globalMax,xS,yS]);
 
-  const xticks=useMemo(()=>logTicks(dMin,dMax,PW),[dMin,dMax]);
+  const xticks=useMemo(()=>tks(dMin,dMax,PW),[dMin,dMax,tks]);
   const yTicks=useMemo(()=>{
     if(normalize)return[0,0.25,0.5,0.75,1];
     const n=4;const s=Math.ceil(globalMax/n);return Array.from({length:n+1},(_,i)=>i*s).filter(v=>v<=globalMax*1.05);
@@ -507,10 +521,10 @@ function OverlayHistogram({samples,colors,channel,xLabel,yLabel,gateValue,onGate
   const yTickY=useCallback(yt=>normalize?PL.mt+PH-yt*PH:yS(yt,globalMax),[normalize,globalMax,yS]);
   const yTickLabel=useCallback(yt=>normalize?Math.round(yt*100):yt,[normalize]);
 
-  const tGate=HX(gateValue);
+  const tGate=tf(gateValue);
   const gateX=Math.max(PL.ml,Math.min(PL.ml+PW,xS(tGate)));
 
-  const toVal=useCallback(e=>{if(!svgRef.current)return gateValue;const r=svgRef.current.getBoundingClientRect();const sx=((e.clientX-r.left)/r.width)*PL.w;const tv=lo+((sx-PL.ml)/PW)*(hi-lo);return Math.round(HinvX(Math.max(lo,Math.min(hi,tv))));},[lo,hi,gateValue]);
+  const toVal=useCallback(e=>{if(!svgRef.current)return gateValue;const r=svgRef.current.getBoundingClientRect();const sx=((e.clientX-r.left)/r.width)*PL.w;const tv=lo+((sx-PL.ml)/PW)*(hi-lo);return Math.round(inv(Math.max(lo,Math.min(hi,tv))));},[lo,hi,gateValue]);
   const onDown=e=>{dragRef.current=true;e.preventDefault();};
   const onMove=useCallback(e=>{if(dragRef.current)onGateChange(toVal(e));},[toVal,onGateChange]);
   const onUp=()=>{dragRef.current=false;};
@@ -546,7 +560,7 @@ function OverlayHistogram({samples,colors,channel,xLabel,yLabel,gateValue,onGate
         </>}
         {/* axes */}
         <line x1={PL.ml} x2={PL.ml+PW} y1={PL.mt+PH} y2={PL.mt+PH} stroke="#111111" strokeWidth={1.2}/>
-        {xticks.map(({v,label})=>{const x=xS(HX(v));return <g key={v}><line x1={x} x2={x} y1={PL.mt+PH} y2={PL.mt+PH+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={PL.mt+PH+17} textAnchor="middle" fontSize="9.5" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmtLogTick(v)}</text>}</g>;})}
+        {xticks.map(({v,label})=>{const x=xS(tf(v));return <g key={v}><line x1={x} x2={x} y1={PL.mt+PH} y2={PL.mt+PH+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={PL.mt+PH+17} textAnchor="middle" fontSize="9.5" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmt(v)}</text>}</g>;})}
         <text x={PL.ml+PW/2} y={PL.h-4} textAnchor="middle" fontSize="10" fill="#374151" fontWeight="500" style={{fontFamily:"var(--ff)"}}>{xLabel}</text>
         <line x1={PL.ml} x2={PL.ml} y1={PL.mt} y2={PL.mt+PH} stroke="#4B5563" strokeWidth={1}/>
         {yTicks.map((yt,i)=><g key={i}><line x1={PL.ml-4} x2={PL.ml} y1={yTickY(yt)} y2={yTickY(yt)} stroke="#4B5563"/><text x={PL.ml-7} y={yTickY(yt)+3} textAnchor="end" fontSize="8" fill="#6B7280" style={{fontFamily:"var(--ff)"}}>{yTickLabel(yt)}</text></g>)}
@@ -573,9 +587,10 @@ function OverlayHistogram({samples,colors,channel,xLabel,yLabel,gateValue,onGate
 }
 
 // ─── Ridge Plot ──────────────────────────────────────
-function RidgePlot({samples,colors,channel,gateValue,onGateChange,xLabel,xDomain,gateLabel,gateColor,showGate=true,onToggleGate,showPct=true,onTogglePct,pctPos="left",setPctPos}){
+function RidgePlot({samples,colors,channel,gateValue,onGateChange,xLabel,xDomain,gateLabel,gateColor,showGate=true,onToggleGate,showPct=true,onTogglePct,pctPos="left",setPctPos,xScale="log"}){
   const ridgeRef=useRef(null);
   const dragRef=useRef(false);
+  const isLog=xScale!=="biexp",tf=isLog?HX:T,inv=isLog?HinvX:invT,tks=isLog?logTicks:axisTicks,fmt=isLog?fmtLogTick:fmtTick;
   const[labelMode,setLabelMode]=useState("side"); // "side" (left gutter) | "inline" (compact, on plot) | "legend" (key on right)
   const[fontScale,setFontScale]=useState(1);
   const[overlap,setOverlap]=useState(0.55); // 0 = staggered/separated lanes … 0.7 = tight ridge
@@ -603,14 +618,14 @@ function RidgePlot({samples,colors,channel,gateValue,onGateChange,xLabel,xDomain
   const vbX=-LABEL_W;
   const vbW=LABEL_W+PLOT_L+PLOT_W+PLOT_R; // legend overlaps the top-right corner, no extra width
 
-  const sharedRange=useMemo(()=>xDomain||analyzePooledValues(samples,channel),[xDomain,samples,channel]);
+  const sharedRange=useMemo(()=>xDomain||analyzePooledValues(samples,channel,isLog),[xDomain,samples,channel,isLog]);
   const xS=useCallback(tv=>PLOT_L+((tv-sharedRange.lo)/(sharedRange.hi-sharedRange.lo))*PLOT_W,[sharedRange]);
-  const xticks=useMemo(()=>logTicks(sharedRange.dMin,sharedRange.dMax,PLOT_W),[sharedRange]);
+  const xticks=useMemo(()=>tks(sharedRange.dMin,sharedRange.dMax,PLOT_W),[sharedRange,tks]);
 
   const histData=useMemo(()=>{
     return samples.map(s=>{
       const vals=s.columns[channel]||[];
-      const{counts,centers}=computeHist(vals,N_BINS,sharedRange.lo,sharedRange.hi);
+      const{counts,centers}=computeHist(vals,N_BINS,sharedRange.lo,sharedRange.hi,isLog);
       const displayCounts=smoothCounts(counts);
       let maxC=1;for(let i=0;i<displayCounts.length;i++)if(displayCounts[i]>maxC)maxC=displayCounts[i];
       let posCount=0;for(let i=0;i<vals.length;i++)if(vals[i]>=gateValue)posCount++;
@@ -621,7 +636,7 @@ function RidgePlot({samples,colors,channel,gateValue,onGateChange,xLabel,xDomain
     });
   },[samples,channel,sharedRange,gateValue]);
 
-  const tGate=HX(gateValue);
+  const tGate=tf(gateValue);
   const gateX=Math.max(PLOT_L,Math.min(PLOT_L+PLOT_W,xS(tGate)));
 
   const toVal=useCallback(e=>{
@@ -629,7 +644,7 @@ function RidgePlot({samples,colors,channel,gateValue,onGateChange,xLabel,xDomain
     const pxPerUnit=r.width/vbW;
     const svgX=((e.clientX-r.left)/pxPerUnit)+vbX;
     const tv=sharedRange.lo+((svgX-PLOT_L)/PLOT_W)*(sharedRange.hi-sharedRange.lo);
-    return Math.round(HinvX(Math.max(sharedRange.lo,Math.min(sharedRange.hi,tv))));
+    return Math.round(inv(Math.max(sharedRange.lo,Math.min(sharedRange.hi,tv))));
   },[sharedRange,gateValue,vbW,vbX]);
   const onDown=e=>{dragRef.current=true;e.preventDefault();};
   const onMove=useCallback(e=>{if(dragRef.current)onGateChange(toVal(e));},[toVal,onGateChange]);
@@ -706,7 +721,7 @@ function RidgePlot({samples,colors,channel,gateValue,onGateChange,xLabel,xDomain
         <rect x={gateX-12} y={MT-4} width={24} height={ROW_H+STEP*(n-1)+8} fill="transparent" style={{cursor:"ew-resize"}} onMouseDown={onDown}/>
         </>}
         <line x1={PLOT_L} x2={PLOT_L+PLOT_W} y1={lastRowBase} y2={lastRowBase} stroke="#111111" strokeWidth={1.2}/>
-        {xticks.map(({v,label})=>{const x=xS(HX(v));return <g key={v}><line x1={x} x2={x} y1={lastRowBase} y2={lastRowBase+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={lastRowBase+11} textAnchor="middle" dominantBaseline="hanging" fontSize="10" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmtLogTick(v)}</text>}</g>;})}
+        {xticks.map(({v,label})=>{const x=xS(tf(v));return <g key={v}><line x1={x} x2={x} y1={lastRowBase} y2={lastRowBase+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={lastRowBase+11} textAnchor="middle" dominantBaseline="hanging" fontSize="10" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmt(v)}</text>}</g>;})}
         {/* legend mode: a compact key overlapping the top-right corner, nothing on the plot */}
         {labelMode==="legend"&&(()=>{
           const leftPct=showPct&&pctPos==="left";
@@ -1121,6 +1136,8 @@ function HistogramMode({samples,allHeaders,colors,updateSampleName,updateColor,r
   const[overlaySel,setOverlaySel]=useState(S.overlaySel!==undefined?S.overlaySel:null); // null = all
   const[overlayNorm,setOverlayNorm]=useState(S.overlayNorm??true);
   const[yMode,setYMode]=useState(S.yMode??"count"); // "count" | "pct"
+  const[xScale,setXScale]=useState(S.xScale||"log"); // histogram x-axis: "log" | "biexp"
+  const xIsLog=xScale!=="biexp";
   const[log2Basis,setLog2Basis]=useState(S.log2Basis??"all"); // "all" | "gated"
   const[log2RefIdx,setLog2RefIdx]=useState(S.log2RefIdx!==undefined?S.log2RefIdx:null); // reference sample._idx; null = first
   const[ridgePctPos,setRidgePctPos]=useState(S.ridgePctPos??"left");
@@ -1141,7 +1158,7 @@ function HistogramMode({samples,allHeaders,colors,updateSampleName,updateColor,r
   const validSamples=useMemo(()=>allValid.filter(s=>!hiddenSet.includes(s._idx)),[allValid,hidden]);
   const gridCols=validSamples.length===1?1:validSamples.length<=4?2:3;
   const handleChannelChange=ch=>{setChannel(ch);setXLabel(ch);};
-  const autoXAxisRange=useMemo(()=>analyzePooledValues(validSamples,channel),[validSamples,channel]);
+  const autoXAxisRange=useMemo(()=>analyzePooledValues(validSamples,channel,xIsLog),[validSamples,channel,xIsLog]);
   const parsedXAxisDraft=useMemo(()=>{
     const minRaw=xMinInput.trim();const maxRaw=xMaxInput.trim();
     if(minRaw===""&&maxRaw==="")return{kind:"auto"};
@@ -1153,9 +1170,10 @@ function HistogramMode({samples,allHeaders,colors,updateSampleName,updateColor,r
   const xDomain=useMemo(()=>{
     const min=Number(appliedXMin);const max=Number(appliedXMax);
     if(appliedXMin.trim()===""||appliedXMax.trim()==="")return null;
-    if(!Number.isFinite(min)||!Number.isFinite(max)||max<=min||min<=0)return null; // log axis needs min>0
-    return{lo:Math.log10(min),hi:Math.log10(max),dMin:min,dMax:max};
-  },[appliedXMin,appliedXMax]);
+    if(!Number.isFinite(min)||!Number.isFinite(max)||max<=min)return null;
+    if(xIsLog){if(min<=0)return null;return{lo:Math.log10(min),hi:Math.log10(max),dMin:min,dMax:max};}
+    return{lo:T(Math.max(0,min)),hi:T(max),dMin:Math.max(0,min),dMax:max};
+  },[appliedXMin,appliedXMax,xIsLog]);
   const axisModeLabel=xDomain?"Manual":"Auto";
   const hasPendingXAxis=xMinInput!==appliedXMin||xMaxInput!==appliedXMax;
   const applyXAxis=()=>{
@@ -1214,13 +1232,21 @@ function HistogramMode({samples,allHeaders,colors,updateSampleName,updateColor,r
                   style={{...inputStyle,width:"100%",background:yMode==="pct"?"#F9FAFB":"white",color:yMode==="pct"?"#9CA3AF":"#111827"}}/>
               </div>
             </div>
-            <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <label style={labelStyle}>Y scale</label>
-              <div style={{display:"flex",borderRadius:6,border:"1px solid #E5E7EB",overflow:"hidden"}}>
-                <button onClick={()=>setYMode("count")} style={{padding:"4px 12px",border:"none",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--ff)",background:yMode==="count"?"#EFF6FF":"white",color:yMode==="count"?"#3B82F6":"#9CA3AF"}} title="Raw event counts">Count</button>
-                <button onClick={()=>setYMode("pct")} style={{padding:"4px 12px",border:"none",borderLeft:"1px solid #E5E7EB",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--ff)",background:yMode==="pct"?"#EFF6FF":"white",color:yMode==="pct"?"#3B82F6":"#9CA3AF"}} title="Each histogram scaled to its own peak (0–100%)">% max</button>
+            <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <label style={labelStyle}>X scale</label>
+                <div style={{display:"flex",borderRadius:6,border:"1px solid #E5E7EB",overflow:"hidden"}}>
+                  <button onClick={()=>setXScale("log")} style={{padding:"4px 12px",border:"none",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--ff)",background:xIsLog?"#EFF6FF":"white",color:xIsLog?"#3B82F6":"#9CA3AF"}} title="Log scale (10ⁿ decades) — ≤0 events off-scale">Log</button>
+                  <button onClick={()=>setXScale("biexp")} style={{padding:"4px 12px",border:"none",borderLeft:"1px solid #E5E7EB",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--ff)",background:!xIsLog?"#EFF6FF":"white",color:!xIsLog?"#3B82F6":"#9CA3AF"}} title="Biexponential — shows near-zero and negative events in a linear region">Biexp</button>
+                </div>
               </div>
-              <span style={{fontSize:10.5,color:"#9CA3AF"}}>Grid histograms</span>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <label style={labelStyle}>Y scale</label>
+                <div style={{display:"flex",borderRadius:6,border:"1px solid #E5E7EB",overflow:"hidden"}}>
+                  <button onClick={()=>setYMode("count")} style={{padding:"4px 12px",border:"none",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--ff)",background:yMode==="count"?"#EFF6FF":"white",color:yMode==="count"?"#3B82F6":"#9CA3AF"}} title="Raw event counts">Count</button>
+                  <button onClick={()=>setYMode("pct")} style={{padding:"4px 12px",border:"none",borderLeft:"1px solid #E5E7EB",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--ff)",background:yMode==="pct"?"#EFF6FF":"white",color:yMode==="pct"?"#3B82F6":"#9CA3AF"}} title="Each histogram scaled to its own peak (0–100%)">% max</button>
+                </div>
+              </div>
             </div>
             <div>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -1279,7 +1305,7 @@ function HistogramMode({samples,allHeaders,colors,updateSampleName,updateColor,r
                 style={{position:"absolute",top:4,right:4,zIndex:10,width:22,height:22,borderRadius:6,border:"none",background:"transparent",color:"#CBD5E1",cursor:"pointer",fontSize:16,lineHeight:"20px",fontFamily:"var(--ff)",display:"flex",alignItems:"center",justifyContent:"center"}}
                 onMouseEnter={e=>{e.currentTarget.style.background="#FEE2E2";e.currentTarget.style.color="#EF4444";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color="#CBD5E1";}}>×</button>
               <Histogram values={s.columns[channel]} name={s.name} color={colors[s._idx]||PALETTE[s._idx%PALETTE.length]}
-                xLabel={xLabel} yLabel={yLabel} gateValue={gate} onGateChange={setGate} onNameChange={n=>updateSampleName(s._idx,n)} xDomain={xDomain||autoXAxisRange} gateLabel={gateLabel} gateColor={gateColor} yMode={yMode} showGate={showGate} showPct={showPct}/>
+                xLabel={xLabel} yLabel={yLabel} gateValue={gate} onGateChange={setGate} onNameChange={n=>updateSampleName(s._idx,n)} xDomain={xDomain||autoXAxisRange} gateLabel={gateLabel} gateColor={gateColor} yMode={yMode} showGate={showGate} showPct={showPct} xScale={xScale}/>
             </div>
           ))}
         </div>
@@ -1314,7 +1340,7 @@ function HistogramMode({samples,allHeaders,colors,updateSampleName,updateColor,r
           </div>
           {overlaySamples.length>0
             ?<OverlayHistogram samples={overlaySamples} colors={overlaySamples.map(s=>colors[s._idx]||PALETTE[s._idx%PALETTE.length])}
-              channel={channel} xLabel={xLabel} yLabel={yLabel} gateValue={gate} onGateChange={setGate} xDomain={xDomain} gateLabel={gateLabel} normalize={overlayNorm} gateColor={gateColor} showGate={showGate} showPct={showPct} onToggleGate={onToggleGate} onTogglePct={onTogglePct} pctPos={overlayPctPos} setPctPos={setOverlayPctPos}/>
+              channel={channel} xLabel={xLabel} yLabel={yLabel} gateValue={gate} onGateChange={setGate} xDomain={xDomain} gateLabel={gateLabel} normalize={overlayNorm} gateColor={gateColor} showGate={showGate} showPct={showPct} onToggleGate={onToggleGate} onTogglePct={onTogglePct} pctPos={overlayPctPos} setPctPos={setOverlayPctPos} xScale={xScale}/>
             :<div style={{textAlign:"center",color:"#9CA3AF",fontSize:13,padding:"40px 0",background:"white",borderRadius:12,border:"1px solid #E5E7EB"}}>Select at least one sample above to overlay.</div>}
         </div>
       )}
@@ -1323,7 +1349,7 @@ function HistogramMode({samples,allHeaders,colors,updateSampleName,updateColor,r
       {validSamples.length>1&&viewMode==="ridge"&&(
         <div style={{maxWidth:1000,margin:"0 auto"}}>
           <RidgePlot samples={validSamples} colors={validSamples.map(s=>colors[s._idx]||PALETTE[s._idx%PALETTE.length])}
-            channel={channel} gateValue={gate} onGateChange={setGate} xLabel={xLabel} xDomain={xDomain} gateLabel={gateLabel} gateColor={gateColor} showGate={showGate} onToggleGate={onToggleGate} showPct={showPct} onTogglePct={onTogglePct} pctPos={ridgePctPos} setPctPos={setRidgePctPos}/>
+            channel={channel} gateValue={gate} onGateChange={setGate} xLabel={xLabel} xDomain={xDomain} gateLabel={gateLabel} gateColor={gateColor} showGate={showGate} onToggleGate={onToggleGate} showPct={showPct} onTogglePct={onTogglePct} pctPos={ridgePctPos} setPctPos={setRidgePctPos} xScale={xScale}/>
         </div>
       )}
 
