@@ -50,7 +50,13 @@ function detectChannels(headers){
 function computeHist(values,nBins,lo,hi){
   const w=(hi-lo)/nBins;const counts=new Array(nBins).fill(0);
   const centers=Array.from({length:nBins},(_,i)=>lo+(i+0.5)*w);
-  for(let k=0;k<values.length;k++){const tv=T(values[k]);const idx=Math.floor((tv-lo)/w);if(idx>=0&&idx<nBins)counts[idx]++;}
+  for(let k=0;k<values.length;k++){
+    const v=values[k];
+    // Fluorescence can't be negative: pile ≤0 events into the leftmost bin (like a log axis
+    // clamping to its floor) rather than spreading them left. Positive events bin normally.
+    const idx=v<=0?0:Math.floor((T(v)-lo)/w);
+    if(idx>=0&&idx<nBins)counts[idx]++;
+  }
   return{counts,centers};
 }
 function fmtTick(v){
@@ -198,9 +204,10 @@ function analyzeValues(values){
   const n=sorted.length;
   const p005=sorted[Math.floor(n*0.003)];
   const p995=sorted[Math.min(n-1,Math.ceil(n*0.997))];
-  const tLo=T(p005);const tHi=T(p995);
+  const lo0=Math.max(0,p005); // floor at 0 — don't let negatives drag the axis left
+  const tLo=T(lo0);const tHi=T(p995);
   const pad=(tHi-tLo)*0.05;
-  return{lo:tLo-pad,hi:tHi+pad,dMin:p005,dMax:p995};
+  return{lo:tLo-pad,hi:tHi+pad,dMin:lo0,dMax:p995};
 }
 function analyzePooledValues(samples,channel){
   const pooled=[];
@@ -209,9 +216,13 @@ function analyzePooledValues(samples,channel){
   pooled.sort((a,b)=>a-b);
   const p005=pooled[Math.floor(pooled.length*0.005)];
   const p995=pooled[Math.ceil(pooled.length*0.995)-1];
-  const tLo=T(p005);const tHi=T(p995);
+  // Floor the axis at 0: fluorescence has no meaningful negatives, so don't let sub-zero
+  // events drag the domain left (which squashes the real population). Sub-zero events are
+  // piled at the left edge instead (see computeHist), matching a log-style FlowJo display.
+  const lo0=Math.max(0,p005);
+  const tLo=T(lo0);const tHi=T(p995);
   const pad=(tHi-tLo)*0.06;
-  return{lo:tLo-pad,hi:tHi+pad,dMin:p005,dMax:p995};
+  return{lo:tLo-pad,hi:tHi+pad,dMin:lo0,dMax:p995};
 }
 function getRange(values){
   const sorted=[...values].sort((a,b)=>a-b);
