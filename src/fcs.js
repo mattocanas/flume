@@ -31,6 +31,15 @@ export function parseFCS(arrayBuffer){
     bits.push(parseInt(kv["$P"+p+"B"],10));
     ranges.push(parseFloat(kv["$P"+p+"R"]));
   }
+  // Integer data is read as 8/16/32-bit words. Other bit widths (e.g. 10/12/14/24-bit) would
+  // misalign the entire DATA segment, so reject them loudly instead of returning garbage.
+  if(dtype==="I"){
+    for(let p=0;p<par;p++){
+      if(bits[p]!==8&&bits[p]!==16&&bits[p]!==32)
+        throw new Error("Unsupported integer bit width $P"+(p+1)+"B="+bits[p]+" (Flume reads 8/16/32-bit integer, or 32/64-bit float, list-mode FCS). Re-export as FCS 3.1 float, or export channel values as CSV.");
+    }
+  }
+
   // De-duplicate channel names (some files repeat)
   const seen={};
   const headers = names.map(n=>{ if(seen[n]!==undefined){seen[n]++;return n+"."+seen[n];} seen[n]=0; return n; });

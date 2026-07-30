@@ -34,9 +34,9 @@ Overlay histograms comparing samples on a shared axis, with % positive per sampl
   - 2-D **dot / density** plots with a smoothed, density-sorted rainbow colormap
 - **Gating** — draggable quadrant, vertical, and horizontal gates with live
   per-region percentages.
-- **Statistics** — geometric mean fluorescence intensity (gMFI) for whole and
-  gated populations, plus log₂ fold-change across a gate or against a reference
-  sample.
+- **Statistics** — geometric mean fluorescence intensity (gMFI, computed over
+  events > 0) for whole and gated populations, arithmetic MFI for gated events,
+  plus log₂ fold-change across a gate or against a reference sample.
 - **Figure controls** — dot size, independent tick / axis-label font sizes,
   panel column layout, plot reorder, per-plot show/hide, custom palettes and
   per-sample colors.
@@ -48,6 +48,31 @@ Overlay histograms comparing samples on a shared axis, with % positive per sampl
 The [`examples/`](./examples) folder has two small synthetic CSVs. Drag both onto
 the upload box to explore histograms, overlays, ridge plots, quadrant gating, and
 gMFI / log₂ fold-change — no real data needed.
+
+## Method notes & scope
+
+Flume is a **viewer and figure-maker**, not a replacement for a full analysis
+package. A few things worth knowing so the numbers mean what you expect:
+
+- **Compensation / spillover is not applied.** Raw `.fcs` files are plotted
+  **uncompensated**. For the CSV workflow this is a non-issue — FlowJo (etc.)
+  channel-value exports are already compensated upstream. But for multicolor
+  panels on the **Analysis (raw `.fcs`) tab**, compensate in your acquisition or
+  analysis software first and export channel values, or spillover spread will
+  appear as real signal.
+- **gMFI is a geometric mean over positive events.** Events with value ≤ 0
+  (which the biexponential view shows near the origin) are excluded from the
+  geometric mean, as they must be. For dim/negative populations this biases gMFI
+  upward relative to the arithmetic mean; the `MFI` column is the arithmetic mean
+  of gated events if you need it.
+- **The "Biexp" axis is an asinh transform** (cofactor 150), a biexponential-style
+  scale — not FlowJo's Logicle. It faithfully shows the near-zero/negative
+  population, but gate pixel-positions won't exactly match FlowJo.
+- **FCS support:** FCS 3.0 / 3.1, list-mode, single dataset. Datatypes `F`
+  (32-bit float), `D` (64-bit float), and `I` (8/16/32-bit integer). Log-amplified
+  data (`$PnE`) and gain (`$PnG`) are not back-transformed — intended for modern
+  linear-digital instruments. Unsupported files are rejected with a clear message
+  rather than mis-parsed. Validated against Attune NxT and MACSQuant exports.
 
 ## Privacy
 

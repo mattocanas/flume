@@ -38,7 +38,14 @@ function parseCSV(text){
   const sep=lines[0].includes("\t")?"\t":",";
   const headers=lines[0].split(sep).map(h=>h.trim().replace(/^"|"$/g,""));
   const columns={};headers.forEach(h=>(columns[h]=[]));
-  for(let i=1;i<lines.length;i++){const vals=lines[i].split(sep);headers.forEach((h,j)=>{const v=parseFloat(vals[j]);if(!isNaN(v))columns[h].push(v);});}
+  for(let i=1;i<lines.length;i++){
+    const vals=lines[i].split(sep);
+    if(vals.length<headers.length)continue;              // skip short / malformed rows
+    const row=headers.map((h,j)=>parseFloat(vals[j]));
+    if(row.some(v=>!isFinite(v)))continue;               // skip any row with a non-numeric cell so every
+                                                          // channel stays event-aligned (2-D plots pair xVals[i]/yVals[i])
+    for(let j=0;j<headers.length;j++)columns[headers[j]].push(row[j]);
+  }
   return{headers,columns};
 }
 function detectPE(headers){
@@ -1239,7 +1246,7 @@ function HistogramMode({samples,allHeaders,colors,updateSampleName,updateColor,r
                 <label style={labelStyle}>X scale</label>
                 <div style={{display:"flex",borderRadius:6,border:"1px solid #E5E7EB",overflow:"hidden"}}>
                   <button onClick={()=>setXScale("log")} style={{padding:"4px 12px",border:"none",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--ff)",background:xIsLog?"#EFF6FF":"white",color:xIsLog?"#3B82F6":"#9CA3AF"}} title="Log scale (10ⁿ decades) — ≤0 events off-scale">Log</button>
-                  <button onClick={()=>setXScale("biexp")} style={{padding:"4px 12px",border:"none",borderLeft:"1px solid #E5E7EB",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--ff)",background:!xIsLog?"#EFF6FF":"white",color:!xIsLog?"#3B82F6":"#9CA3AF"}} title="Biexponential — shows near-zero and negative events in a linear region">Biexp</button>
+                  <button onClick={()=>setXScale("biexp")} style={{padding:"4px 12px",border:"none",borderLeft:"1px solid #E5E7EB",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--ff)",background:!xIsLog?"#EFF6FF":"white",color:!xIsLog?"#3B82F6":"#9CA3AF"}} title="Biexponential-style (asinh, cofactor 150) — shows near-zero and negative events in a linear region. Not FlowJo Logicle, so gate positions may differ slightly.">Biexp</button>
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -1384,6 +1391,7 @@ function HistogramMode({samples,allHeaders,colors,updateSampleName,updateColor,r
               <button onClick={()=>setLog2Basis("all")} style={{padding:"4px 10px",border:"none",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--ff)",background:log2Basis==="all"?"#EFF6FF":"white",color:log2Basis==="all"?"#3B82F6":"#9CA3AF"}}>gMFI (all)</button>
               <button onClick={()=>setLog2Basis("gated")} style={{padding:"4px 10px",border:"none",borderLeft:"1px solid #E5E7EB",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--ff)",background:log2Basis==="gated"?"#EFF6FF":"white",color:log2Basis==="gated"?"#3B82F6":"#9CA3AF"}}>gMFI ({gateLabel})</button>
             </div>
+            <span style={{fontSize:11,color:"#9CA3AF"}} title="Geometric mean is defined over events with value > 0; non-positive events are excluded. MFI is the arithmetic mean.">gMFI = geometric mean of events &gt; 0</span>
           </div>
           <div style={{background:"white",borderRadius:10,border:"1px solid #E5E7EB",overflow:"hidden"}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
@@ -1746,6 +1754,7 @@ function QuadrantMode({samples,allHeaders,colors,updateSampleName,updateColor,re
                 </div>
               </>}
               <span style={{fontSize:11,color:"#9CA3AF"}}>{sampleMode?"log₂FC = each sample's "+basisLbl+" gMFI ÷ "+ref.s.name+"'s":"log₂FC = gate-positive gMFI ÷ gate-negative gMFI"}</span>
+              <span style={{fontSize:11,color:"#9CA3AF"}} title="Geometric mean is defined over events with value > 0; non-positive events are excluded.">· gMFI over events &gt; 0</span>
             </div>
             <div style={{background:"white",borderRadius:10,border:"1px solid #E5E7EB",overflow:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
@@ -2150,7 +2159,7 @@ function AnalysisMode({gateColor,showGate,showPct,onToggleGate,onTogglePct,palet
         </div>
       )}
 
-      {fsamples.length===0&&<div style={{maxWidth:620,margin:"36px auto",textAlign:"center",color:"#9CA3AF",fontSize:13,lineHeight:1.7}}><strong style={{color:"#6B7280"}}>Full-stack analysis:</strong><br/>Drop raw <b>.fcs</b> files → adjust the Cells and Singlets polygon gates → plot any channel on the gated singlets.</div>}
+      {fsamples.length===0&&<div style={{maxWidth:620,margin:"36px auto",textAlign:"center",color:"#9CA3AF",fontSize:13,lineHeight:1.7}}><strong style={{color:"#6B7280"}}>Full-stack analysis:</strong><br/>Drop raw <b>.fcs</b> files → adjust the Cells and Singlets polygon gates → plot any channel on the gated singlets.<br/><span style={{fontSize:12,color:"#B45309"}}>Raw .fcs data is shown <b>uncompensated</b> — for multicolor panels, compensate upstream and export channel values (CSV) instead.</span></div>}
     </>
   );
 }
@@ -2295,7 +2304,7 @@ export default function FlowCytometryApp(){
                 ?"Click titles to rename · Click legend swatches to recolor · Drag the gate line · Overlay to superimpose samples"
                 :mode==="quadrant"
                 ?"Upload gated singlet CSVs · Drag the crosshair to set quadrant gates"
-                :"Drop raw .fcs files · adjust the Cells & Singlets polygon gates · plot the gated singlet population"}
+                :"Drop raw .fcs files · adjust the Cells & Singlets polygon gates · plot the gated singlet population · shown uncompensated"}
             </p>
           </div>
           <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:8}}>
