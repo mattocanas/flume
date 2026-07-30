@@ -9,6 +9,9 @@ function arrMax(a){let m=-Infinity;for(let i=0;i<a.length;i++)if(a[i]>m)m=a[i];r
 const COF=150;
 const T=x=>Math.asinh(x/COF);
 const invT=y=>Math.sinh(y)*COF;
+// Histograms use a true log10 x-axis (like FlowJo). ≤0 events are off-scale and not plotted.
+const HX=v=>Math.log10(v>0?v:1e-9);
+const HinvX=t=>Math.pow(10,t);
 const N_BINS=220;
 const SUP={0:"⁰",1:"¹",2:"²",3:"³",4:"⁴",5:"⁵",6:"⁶",7:"⁷",8:"⁸",9:"⁹"};
 
@@ -57,7 +60,7 @@ function computeHist(values,nBins,lo,hi){
     // giant edge spike that would flatten the real population. Stats (% positive, gMFI) use the
     // full raw data separately, so they're unaffected.
     if(v<=0)continue;
-    const idx=Math.floor((T(v)-lo)/w);
+    const idx=Math.floor((Math.log10(v)-lo)/w);
     if(idx>=0&&idx<nBins)counts[idx]++;
   }
   return{counts,centers};
@@ -202,30 +205,13 @@ function getTicks(dMin,dMax){
   return thinned;
 }
 
-function analyzeValues(values){
-  const sorted=[...values].sort((a,b)=>a-b);
-  const n=sorted.length;
-  const p005=sorted[Math.floor(n*0.003)];
-  const p995=sorted[Math.min(n-1,Math.ceil(n*0.997))];
-  const lo0=Math.max(0,p005); // floor at 0 — don't let negatives drag the axis left
-  const tLo=T(lo0);const tHi=T(p995);
-  const pad=(tHi-tLo)*0.05;
-  return{lo:tLo-pad,hi:tHi+pad,dMin:lo0,dMax:p995};
-}
+// Histogram domains are log10, snapped to decade bounds (see logRange) so the axis reads like a
+// FlowJo log plot (10⁰, 10¹, …). Only positive events define the range; ≤0 are off-scale.
+function analyzeValues(values){return logRange(values);}
 function analyzePooledValues(samples,channel){
   const pooled=[];
   for(const s of samples){const vals=s.columns[channel];if(vals)for(let i=0;i<vals.length;i++)pooled.push(vals[i]);}
-  if(!pooled.length)return{lo:-1,hi:1,dMin:-1000,dMax:10000};
-  pooled.sort((a,b)=>a-b);
-  const p005=pooled[Math.floor(pooled.length*0.005)];
-  const p995=pooled[Math.ceil(pooled.length*0.995)-1];
-  // Floor the axis at 0: fluorescence has no meaningful negatives, so don't let sub-zero
-  // events drag the domain left (which squashes the real population). Sub-zero events are
-  // piled at the left edge instead (see computeHist), matching a log-style FlowJo display.
-  const lo0=Math.max(0,p005);
-  const tLo=T(lo0);const tHi=T(p995);
-  const pad=(tHi-tLo)*0.06;
-  return{lo:tLo-pad,hi:tHi+pad,dMin:lo0,dMax:p995};
+  return logRange(pooled);
 }
 function getRange(values){
   const sorted=[...values].sort((a,b)=>a-b);
@@ -394,7 +380,7 @@ function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNam
   const xS=useCallback(tv=>PL.ml+((tv-lo)/(hi-lo))*PW,[lo,hi]);
   const yS=useCallback(c=>PL.mt+PH-(c/maxC)*PH,[maxC]);
 
-  const tGate=T(gateValue);
+  const tGate=HX(gateValue);
   const gateX=Math.max(PL.ml,Math.min(PL.ml+PW,xS(tGate)));
   const pePct=useMemo(()=>{let c=0;for(let i=0;i<values.length;i++)if(values[i]>=gateValue)c++;return((c/values.length)*100).toFixed(1);},[values,gateValue]);
   const gmfiAll=useMemo(()=>{let logSum=0,logN=0;for(let i=0;i<values.length;i++)if(values[i]>0){logSum+=Math.log(values[i]);logN++;}return logN>0?Math.round(Math.exp(logSum/logN)):0;},[values]);
@@ -403,7 +389,7 @@ function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNam
     const baseLine=PL.mt+PH;
     const points=centers.map((center,i)=>({x:xS(center),y:yS(displayCounts[i])}));
     const mp=smoothAreaPath(points,baseLine);
-    let pp="";const tg=T(gateValue);const gi=centers.findIndex(c=>c>=tg);
+    let pp="";const tg=HX(gateValue);const gi=centers.findIndex(c=>c>=tg);
     if(gi>=0&&gi<centers.length){
       const gx=Math.max(PL.ml,Math.min(PL.ml+PW,xS(tg)));
       let sY=baseLine;
@@ -417,7 +403,7 @@ function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNam
     return{mainPath:mp,posPath:pp};
   },[centers,displayCounts,gateValue,xS,yS]);
 
-  const xticks=useMemo(()=>axisTicks(dMin,dMax,PW),[dMin,dMax]);
+  const xticks=useMemo(()=>logTicks(dMin,dMax,PW),[dMin,dMax]);
   const yTicks=useMemo(()=>{
     if(yMode==="pct")return[0,0.25,0.5,0.75,1].map(f=>({y:PL.mt+PH-f*PH,label:Math.round(f*100)}));
     const n=4;const s=Math.ceil(maxC/n);
@@ -425,7 +411,7 @@ function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNam
   },[maxC,yMode,yS]);
   const effYLabel=yMode==="pct"?"% of max":yLabel;
 
-  const toVal=useCallback(e=>{if(!svgRef.current)return gateValue;const r=svgRef.current.getBoundingClientRect();const sx=((e.clientX-r.left)/r.width)*PL.w;const tv=lo+((sx-PL.ml)/PW)*(hi-lo);return Math.round(invT(Math.max(lo,Math.min(hi,tv))));},[lo,hi,gateValue,svgRef]);
+  const toVal=useCallback(e=>{if(!svgRef.current)return gateValue;const r=svgRef.current.getBoundingClientRect();const sx=((e.clientX-r.left)/r.width)*PL.w;const tv=lo+((sx-PL.ml)/PW)*(hi-lo);return Math.round(HinvX(Math.max(lo,Math.min(hi,tv))));},[lo,hi,gateValue,svgRef]);
   const onDown=e=>{dragRef.current=true;e.preventDefault();};
   const onMove=useCallback(e=>{if(dragRef.current)onGateChange(toVal(e));},[toVal,onGateChange]);
   const onUp=()=>{dragRef.current=false;};
@@ -457,7 +443,7 @@ function Histogram({values,name,color,xLabel,yLabel,gateValue,onGateChange,onNam
           <text y={16} fontSize="13" fontWeight="800" fill={gateColor} style={{fontFamily:"var(--ff)"}}>{pePct}%</text>
         </g>}
         <line x1={PL.ml} x2={PL.ml+PW} y1={PL.mt+PH} y2={PL.mt+PH} stroke="#111111" strokeWidth={1.2}/>
-        {xticks.map(({v,label})=>{const x=xS(T(v));return <g key={v}><line x1={x} x2={x} y1={PL.mt+PH} y2={PL.mt+PH+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={PL.mt+PH+17} textAnchor="middle" fontSize="9.5" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmtTick(v)}</text>}</g>;})}
+        {xticks.map(({v,label})=>{const x=xS(HX(v));return <g key={v}><line x1={x} x2={x} y1={PL.mt+PH} y2={PL.mt+PH+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={PL.mt+PH+17} textAnchor="middle" fontSize="9.5" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmtLogTick(v)}</text>}</g>;})}
         <text x={PL.ml+PW/2} y={PL.h-4} textAnchor="middle" fontSize="10" fill="#374151" fontWeight="500" style={{fontFamily:"var(--ff)"}}>{xLabel}</text>
         <line x1={PL.ml} x2={PL.ml} y1={PL.mt} y2={PL.mt+PH} stroke="#4B5563" strokeWidth={1}/>
         {yTicks.map((yt,i)=><g key={i}><line x1={PL.ml-4} x2={PL.ml} y1={yt.y} y2={yt.y} stroke="#4B5563"/><text x={PL.ml-7} y={yt.y+3} textAnchor="end" fontSize="8" fill="#6B7280" style={{fontFamily:"var(--ff)"}}>{yt.label}</text></g>)}
@@ -513,7 +499,7 @@ function OverlayHistogram({samples,colors,channel,xLabel,yLabel,gateValue,onGate
     return{x,y,pct:s.pct,color:s.color};
   }),[series,normalize,globalMax,xS,yS]);
 
-  const xticks=useMemo(()=>axisTicks(dMin,dMax,PW),[dMin,dMax]);
+  const xticks=useMemo(()=>logTicks(dMin,dMax,PW),[dMin,dMax]);
   const yTicks=useMemo(()=>{
     if(normalize)return[0,0.25,0.5,0.75,1];
     const n=4;const s=Math.ceil(globalMax/n);return Array.from({length:n+1},(_,i)=>i*s).filter(v=>v<=globalMax*1.05);
@@ -521,10 +507,10 @@ function OverlayHistogram({samples,colors,channel,xLabel,yLabel,gateValue,onGate
   const yTickY=useCallback(yt=>normalize?PL.mt+PH-yt*PH:yS(yt,globalMax),[normalize,globalMax,yS]);
   const yTickLabel=useCallback(yt=>normalize?Math.round(yt*100):yt,[normalize]);
 
-  const tGate=T(gateValue);
+  const tGate=HX(gateValue);
   const gateX=Math.max(PL.ml,Math.min(PL.ml+PW,xS(tGate)));
 
-  const toVal=useCallback(e=>{if(!svgRef.current)return gateValue;const r=svgRef.current.getBoundingClientRect();const sx=((e.clientX-r.left)/r.width)*PL.w;const tv=lo+((sx-PL.ml)/PW)*(hi-lo);return Math.round(invT(Math.max(lo,Math.min(hi,tv))));},[lo,hi,gateValue]);
+  const toVal=useCallback(e=>{if(!svgRef.current)return gateValue;const r=svgRef.current.getBoundingClientRect();const sx=((e.clientX-r.left)/r.width)*PL.w;const tv=lo+((sx-PL.ml)/PW)*(hi-lo);return Math.round(HinvX(Math.max(lo,Math.min(hi,tv))));},[lo,hi,gateValue]);
   const onDown=e=>{dragRef.current=true;e.preventDefault();};
   const onMove=useCallback(e=>{if(dragRef.current)onGateChange(toVal(e));},[toVal,onGateChange]);
   const onUp=()=>{dragRef.current=false;};
@@ -560,7 +546,7 @@ function OverlayHistogram({samples,colors,channel,xLabel,yLabel,gateValue,onGate
         </>}
         {/* axes */}
         <line x1={PL.ml} x2={PL.ml+PW} y1={PL.mt+PH} y2={PL.mt+PH} stroke="#111111" strokeWidth={1.2}/>
-        {xticks.map(({v,label})=>{const x=xS(T(v));return <g key={v}><line x1={x} x2={x} y1={PL.mt+PH} y2={PL.mt+PH+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={PL.mt+PH+17} textAnchor="middle" fontSize="9.5" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmtTick(v)}</text>}</g>;})}
+        {xticks.map(({v,label})=>{const x=xS(HX(v));return <g key={v}><line x1={x} x2={x} y1={PL.mt+PH} y2={PL.mt+PH+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={PL.mt+PH+17} textAnchor="middle" fontSize="9.5" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmtLogTick(v)}</text>}</g>;})}
         <text x={PL.ml+PW/2} y={PL.h-4} textAnchor="middle" fontSize="10" fill="#374151" fontWeight="500" style={{fontFamily:"var(--ff)"}}>{xLabel}</text>
         <line x1={PL.ml} x2={PL.ml} y1={PL.mt} y2={PL.mt+PH} stroke="#4B5563" strokeWidth={1}/>
         {yTicks.map((yt,i)=><g key={i}><line x1={PL.ml-4} x2={PL.ml} y1={yTickY(yt)} y2={yTickY(yt)} stroke="#4B5563"/><text x={PL.ml-7} y={yTickY(yt)+3} textAnchor="end" fontSize="8" fill="#6B7280" style={{fontFamily:"var(--ff)"}}>{yTickLabel(yt)}</text></g>)}
@@ -619,7 +605,7 @@ function RidgePlot({samples,colors,channel,gateValue,onGateChange,xLabel,xDomain
 
   const sharedRange=useMemo(()=>xDomain||analyzePooledValues(samples,channel),[xDomain,samples,channel]);
   const xS=useCallback(tv=>PLOT_L+((tv-sharedRange.lo)/(sharedRange.hi-sharedRange.lo))*PLOT_W,[sharedRange]);
-  const xticks=useMemo(()=>axisTicks(sharedRange.dMin,sharedRange.dMax,PLOT_W),[sharedRange]);
+  const xticks=useMemo(()=>logTicks(sharedRange.dMin,sharedRange.dMax,PLOT_W),[sharedRange]);
 
   const histData=useMemo(()=>{
     return samples.map(s=>{
@@ -635,7 +621,7 @@ function RidgePlot({samples,colors,channel,gateValue,onGateChange,xLabel,xDomain
     });
   },[samples,channel,sharedRange,gateValue]);
 
-  const tGate=T(gateValue);
+  const tGate=HX(gateValue);
   const gateX=Math.max(PLOT_L,Math.min(PLOT_L+PLOT_W,xS(tGate)));
 
   const toVal=useCallback(e=>{
@@ -643,7 +629,7 @@ function RidgePlot({samples,colors,channel,gateValue,onGateChange,xLabel,xDomain
     const pxPerUnit=r.width/vbW;
     const svgX=((e.clientX-r.left)/pxPerUnit)+vbX;
     const tv=sharedRange.lo+((svgX-PLOT_L)/PLOT_W)*(sharedRange.hi-sharedRange.lo);
-    return Math.round(invT(Math.max(sharedRange.lo,Math.min(sharedRange.hi,tv))));
+    return Math.round(HinvX(Math.max(sharedRange.lo,Math.min(sharedRange.hi,tv))));
   },[sharedRange,gateValue,vbW,vbX]);
   const onDown=e=>{dragRef.current=true;e.preventDefault();};
   const onMove=useCallback(e=>{if(dragRef.current)onGateChange(toVal(e));},[toVal,onGateChange]);
@@ -720,7 +706,7 @@ function RidgePlot({samples,colors,channel,gateValue,onGateChange,xLabel,xDomain
         <rect x={gateX-12} y={MT-4} width={24} height={ROW_H+STEP*(n-1)+8} fill="transparent" style={{cursor:"ew-resize"}} onMouseDown={onDown}/>
         </>}
         <line x1={PLOT_L} x2={PLOT_L+PLOT_W} y1={lastRowBase} y2={lastRowBase} stroke="#111111" strokeWidth={1.2}/>
-        {xticks.map(({v,label})=>{const x=xS(T(v));return <g key={v}><line x1={x} x2={x} y1={lastRowBase} y2={lastRowBase+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={lastRowBase+11} textAnchor="middle" dominantBaseline="hanging" fontSize="10" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmtTick(v)}</text>}</g>;})}
+        {xticks.map(({v,label})=>{const x=xS(HX(v));return <g key={v}><line x1={x} x2={x} y1={lastRowBase} y2={lastRowBase+(label?6:3)} stroke={label?"#111111":"#9CA3AF"}/>{label&&<text x={x} y={lastRowBase+11} textAnchor="middle" dominantBaseline="hanging" fontSize="10" fill="#4B5563" style={{fontFamily:"var(--ff)"}}>{fmtLogTick(v)}</text>}</g>;})}
         {/* legend mode: a compact key overlapping the top-right corner, nothing on the plot */}
         {labelMode==="legend"&&(()=>{
           const leftPct=showPct&&pctPos==="left";
@@ -1167,8 +1153,8 @@ function HistogramMode({samples,allHeaders,colors,updateSampleName,updateColor,r
   const xDomain=useMemo(()=>{
     const min=Number(appliedXMin);const max=Number(appliedXMax);
     if(appliedXMin.trim()===""||appliedXMax.trim()==="")return null;
-    if(!Number.isFinite(min)||!Number.isFinite(max)||max<=min)return null;
-    return{lo:T(min),hi:T(max),dMin:min,dMax:max};
+    if(!Number.isFinite(min)||!Number.isFinite(max)||max<=min||min<=0)return null; // log axis needs min>0
+    return{lo:Math.log10(min),hi:Math.log10(max),dMin:min,dMax:max};
   },[appliedXMin,appliedXMax]);
   const axisModeLabel=xDomain?"Manual":"Auto";
   const hasPendingXAxis=xMinInput!==appliedXMin||xMaxInput!==appliedXMax;
